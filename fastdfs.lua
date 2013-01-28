@@ -1,3 +1,4 @@
+local VERSION = '0.1'
 
 local tracker_host = "192.168.85.249"
 local tracker_port = 22122
