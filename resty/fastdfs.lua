@@ -1,3 +1,4 @@
+-- Copyright (C) 2012 Azure Wang
 
 local string = string
 local table  = table
