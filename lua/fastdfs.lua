@@ -9,7 +9,9 @@ local method = ngx.var.arg_method
 if method == 'delete' then
     local fileid = ngx.var.arg_fileid
     local res = fdfs:do_delete(fileid)
-    if res.status == 0 then
+    if not res then
+        ngx.say("ERR")
+    elseif res.status == 0 then
         ngx.say("OK")
     else
         ngx.say("ERR:(" .. res.status .. ")")
@@ -17,7 +19,9 @@ if method == 'delete' then
 elseif method == 'upload' then
     local ext_name = ngx.var.arg_ext_name
     local res = fdfs:do_upload(ext_name)
-    if res then
+    if not res then
+        ngx.say("ERR")
+    elseif res then
         ngx.say(string.format("%s/%s",res.group_name, res.file_name))
     else
         ngx.exit(406)
