@@ -1,7 +1,7 @@
 Nginx_Lua-FastDFS
 =================
 
-nginx_lua fastdfs module
+nginx_lua fastdfs module (Please use <a href="https://github.com/azurewang/lua-resty-fastdfs">lua-resty-fastdfs</a>, This module will not update).
 
 
 <h1>
