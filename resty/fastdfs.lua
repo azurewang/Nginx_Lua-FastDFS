@@ -15,8 +15,10 @@ local FDFS_PROTO_PKG_LEN_SIZE = 8
 local TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITHOUT_GROUP_ONE = 101
 local TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITH_GROUP_ONE = 104
 local TRACKER_PROTO_CMD_SERVICE_QUERY_UPDATE = 103
+local TRACKER_PROTO_CMD_SERVICE_QUERY_FETCH_ONE = 102
 local STORAGE_PROTO_CMD_UPLOAD_FILE = 11
 local STORAGE_PROTO_CMD_DELETE_FILE = 12
+local STORAGE_PROTO_CMD_DOWNLOAD_FILE = 14
 local FDFS_FILE_EXT_NAME_MAX_LEN = 6
 local FDFS_PROTO_CMD_QUIT = 82
 local TRACKER_PROTO_CMD_RESP = 100
@@ -358,6 +360,114 @@ function do_delete(self, fileid)
         sock:setkeepalive(keepalive.timeout, keepalive.size)
     end
     return hdr
+end
+
+function query_download_storage(self, fileid)
+    local pos = fileid:find('/')
+    if not pos then
+        return nil
+    else
+        local group_name = fileid:sub(1, pos-1)
+        local file_name  = fileid:sub(pos + 1)
+        local res = self:query_download_storage_ex(group_name, file_name)
+        res.file_name = file_name
+        return res
+    end
+end
+
+function query_download_storage_ex(self, group_name, file_name)
+    local out = {}
+    -- package length
+    table.insert(out, int2buf(16 + string.len(file_name)))
+    -- cmd
+    table.insert(out, string.char(TRACKER_PROTO_CMD_SERVICE_QUERY_FETCH_ONE))
+    -- status
+    table.insert(out, "\00")
+    -- group_name
+    table.insert(out, fix_string(group_name, 16))
+    -- file name
+    table.insert(out, file_name)
+    -- get tracker
+    local tracker = self.tracker
+    if not tracker then
+        return nil
+    end
+    -- init socket
+    local sock, err = ngx.socket.tcp()
+    if not sock then
+        return nil, err
+    end
+    if self.timeout then
+        sock:settimeout(self.timeout)
+    end
+    -- connect tracker
+    local ok, err = sock:connect(tracker.host, tracker.port)
+    if not ok then
+        return nil, err
+    end
+    -- send request
+    local bytes, err = sock:send(out)
+    -- read request header
+    local hdr = read_fdfs_header(sock)
+    -- read body
+    local res = read_tracket_result(sock, hdr)
+    -- keepalive
+    local keepalive = self.tracker_keepalive
+    if keepalive then
+        sock:setkeepalive(keepalive.timeout, keepalive.size)
+    end
+    return res
+end
+
+function do_download(self, fileid)
+    local storage = self:query_download_storage(fileid)
+    if not storage then
+        return nil
+    end
+    local out = {}
+    -- file_offset(8)  download_bytes(8)  group_name(16)  file_name(n)
+    table.insert(out, int2buf(32 + string.len(storage.file_name)))
+    table.insert(out, string.char(STORAGE_PROTO_CMD_DOWNLOAD_FILE))
+    table.insert(out, "\00")
+    -- file_offset  download_bytes  8 + 8
+    table.insert(out, string.rep("\00", 16))
+    -- group name
+    table.insert(out, fix_string(storage.group_name, 16))
+    -- file name
+    table.insert(out, storage.file_name)
+    -- init socket
+    local sock, err = ngx.socket.tcp()
+    if not sock then
+        return nil, err
+    end
+    sock:settimeout(self.timeout)
+    local ok, err = sock:connect(storage.host, storage.port)
+    if not ok then
+        return nil, err
+    end
+    local bytes, err = sock:send(out)
+    if not bytes then
+        ngx.log(ngx.ERR, "fdfs: send request error" .. err)
+        sock:close()
+        ngx.exit(500)
+    end
+    -- read request header
+    local hdr = read_fdfs_header(sock)
+    -- read request bodya
+    local data, partial
+    if hdr.len > 0 then
+        data, err, partial = sock:receive(hdr.len)
+        if not data then
+            ngx.log(ngx.ERR, "read file body error:" .. err)
+            sock:close()
+            ngx.exit(500)
+        end
+    end
+    local keepalive = self.storage_keepalive
+    if keepalive then
+        sock:setkeepalive(keepalive.timeout, keepalive.size)
+    end
+    return data
 end
 
 -- _M.query_upload_storage = query_upload_storage

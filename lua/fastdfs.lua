@@ -1,5 +1,5 @@
 -- main
-local fastdfs = require('resty/fastdfs')
+local fastdfs = require('resty.fastdfs')
 local fdfs = fastdfs:new()
 fdfs:set_tracker("192.168.85.249",22122)
 fdfs:set_timeout(1000)
@@ -26,6 +26,15 @@ elseif method == 'upload' then
     else
         ngx.exit(406)
     end
+elseif method == 'download' then
+    local fileid = ngx.var.arg_fileid
+    local data = fdfs:do_download(fileid)
+    if not data then
+        ngx.say("ERR")
+    else
+        ngx.print(data)
+    end
+
 else
     ngx.say('not input method')
 end
