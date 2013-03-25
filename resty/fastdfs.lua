@@ -7,6 +7,7 @@ local ngx    = ngx
 local tonumber = tonumber
 local setmetatable = setmetatable
 local error = error
+
 module(...)
 
 local VERSION = '0.1'
@@ -19,6 +20,10 @@ local TRACKER_PROTO_CMD_SERVICE_QUERY_FETCH_ONE = 102
 local STORAGE_PROTO_CMD_UPLOAD_FILE = 11
 local STORAGE_PROTO_CMD_DELETE_FILE = 12
 local STORAGE_PROTO_CMD_DOWNLOAD_FILE = 14
+local STORAGE_PROTO_CMD_UPLOAD_SLAVE_FILE = 21
+local STORAGE_PROTO_CMD_QUERY_FILE_INFO = 22
+local STORAGE_PROTO_CMD_UPLOAD_APPENDER_FILE = 23
+local STORAGE_PROTO_CMD_APPEND_FILE = 24
 local FDFS_FILE_EXT_NAME_MAX_LEN = 6
 local FDFS_PROTO_CMD_QUIT = 82
 local TRACKER_PROTO_CMD_RESP = 100
@@ -183,6 +188,88 @@ function query_upload_storage(self, group_name)
     return res
 end
 
+function do_upload_appender(self, ext_name)
+    local storage = self:query_upload_storage()
+    if not storage then
+        return nil
+    end
+    -- ext_name
+    if ext_name then
+        ext_name = fix_string(ext_name, FDFS_FILE_EXT_NAME_MAX_LEN)
+    end
+    -- get file size
+    local file_size = tonumber(ngx.var.content_length)
+    if not file_size or file_size <= 0 then
+        return nil
+    end
+    local sock, err = ngx.socket.tcp()
+    if not sock then
+        return nil, err
+    end
+    if self.timeout then
+        sock:settimeout(self.timeout)
+    end
+    local ok, err = sock:connect(storage.host, storage.port)
+    if not ok then
+        return nil, err
+    end
+    -- send header
+    local out = {}
+    table.insert(out, int2buf(file_size + 15))
+    table.insert(out, string.char(STORAGE_PROTO_CMD_UPLOAD_APPENDER_FILE))
+    -- status
+    table.insert(out, "\00")
+    -- store_path_index
+    table.insert(out, string.char(storage.store_path_index))
+    -- filesize
+    table.insert(out, int2buf(file_size))
+    -- exitname
+    table.insert(out, ext_name)
+    local bytes, err = sock:send(out)
+    -- send file data
+    local send_count = 0
+    local req_sock, err = ngx.req.socket()
+    if not req_sock then
+        ngx.log(ngx.ERR, err)
+        ngx.exit(500)
+    end
+        while true do
+        local chunk, _, part = req_sock:receive(1024 * 32)
+        if not part then
+            local bytes, err = sock:send(chunk)
+            if not bytes then
+                ngx.log(ngx.ngx.ERR, "fdfs: send body error")
+                sock:close()
+                ngx.exit(500)
+            end
+            send_count = send_count + bytes
+        else
+            -- part have data, not read full end
+            local bytes, err = sock:send(part)
+            if not bytes then
+                ngx.log(ngx.ngx.ERR, "fdfs: send body error")
+                sock:close()
+                ngx.exit(500)
+            end
+            send_count = send_count + bytes
+            break
+        end
+    end
+    if send_count ~= file_size then
+        -- send file not full
+        ngx.log(ngx.ngx.ERR, "fdfs: read file body not full")
+        sock:close()
+        ngx.exit(500)
+    end
+    -- read response
+    local res_hdr = read_fdfs_header(sock)
+    local res = read_storage_result(sock, res_hdr)
+    local keepalive = self.storage_keepalive
+    if keepalive then
+        sock:setkeepalive(keepalive.timeout, keepalive.size)
+    end
+    return res
+end
 
 function do_upload(self, ext_name)
     local storage = self:query_upload_storage()
@@ -267,7 +354,7 @@ function do_upload(self, ext_name)
     return res
 end
 
-function query_delete_storage_ex(self, group_name, file_name)
+function query_update_storage_ex(self, group_name, file_name)
     local out = {}
     -- package length
     table.insert(out, int2buf(16 + string.len(file_name)))
@@ -311,21 +398,21 @@ function query_delete_storage_ex(self, group_name, file_name)
     return res
 end
 
-function query_delete_storage(self, fileid)
+function query_update_storage(self, fileid)
     local pos = fileid:find('/')
     if not pos then
         return nil
     else
         local group_name = fileid:sub(1, pos-1)
         local file_name  = fileid:sub(pos + 1)
-        local res = self:query_delete_storage_ex(group_name, file_name)
+        local res = self:query_update_storage_ex(group_name, file_name)
         res.file_name = file_name
         return res
     end
 end
 
 function do_delete(self, fileid)
-    local storage = self:query_delete_storage(fileid)
+    local storage = self:query_update_storage(fileid)
     if not storage then
         return nil
     end
@@ -470,9 +557,86 @@ function do_download(self, fileid)
     return data
 end
 
+function do_append(self, fileid)
+    local storage = self:query_update_storage(fileid)
+    if not storage then
+        return nil
+    end
+    local file_name = storage.file_name
+    local file_name_len = string.len(file_name)
+    -- get file size
+    local file_size = tonumber(ngx.var.content_length)
+    if not file_size or file_size <= 0 then
+        return nil
+    end
+    local sock, err = ngx.socket.tcp()
+    if not sock then
+        return nil, err
+    end
+    if self.timeout then
+        sock:settimeout(self.timeout)
+    end
+    local ok, err = sock:connect(storage.host, storage.port)
+    if not ok then
+        return nil, err
+    end
+    -- send request
+    local out = {}
+    table.insert(out, int2buf(file_size + file_name_len + 16))
+    table.insert(out, string.char(STORAGE_PROTO_CMD_APPEND_FILE))
+    -- status
+    table.insert(out, "\00")
+    table.insert(out, int2buf(file_name_len))
+    table.insert(out, int2buf(file_size))
+    table.insert(out, file_name)
+    local bytes, err = sock:send(out)
+    -- send file data
+    local send_count = 0
+    local req_sock, err = ngx.req.socket()
+    if not req_sock then
+        ngx.log(ngx.ERR, err)
+        ngx.exit(500)
+    end
+    while true do
+        local chunk, _, part = req_sock:receive(1024 * 32)
+        if not part then
+            local bytes, err = sock:send(chunk)
+            if not bytes then
+                ngx.log(ngx.ngx.ERR, "fdfs: send body error")
+                sock:close()
+                ngx.exit(500)
+            end
+            send_count = send_count + bytes
+        else
+            -- part have data, not read full end
+            local bytes, err = sock:send(part)
+            if not bytes then
+                ngx.log(ngx.ngx.ERR, "fdfs: send body error")
+                sock:close()
+                ngx.exit(500)
+            end
+            send_count = send_count + bytes
+            break
+        end
+    end
+    if send_count ~= file_size then
+        -- send file not full
+        ngx.log(ngx.ngx.ERR, "fdfs: read file body not full")
+        sock:close()
+        ngx.exit(500)
+    end
+    -- read response
+    local res_hdr = read_fdfs_header(sock)
+    local res = read_storage_result(sock, res_hdr)
+    local keepalive = self.storage_keepalive
+    if keepalive then
+        sock:setkeepalive(keepalive.timeout, keepalive.size)
+    end
+    return res_hdr
+end
+
 -- _M.query_upload_storage = query_upload_storage
 -- _M.do_upload_storage    = do_upload_storage
--- _M.query_delete_storage = query_delete_storage
 -- _M.do_delete_storage    = do_delete_storage
 
 local class_mt = {

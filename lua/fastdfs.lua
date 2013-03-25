@@ -26,6 +26,16 @@ elseif method == 'upload' then
     else
         ngx.exit(406)
     end
+elseif method == 'upload_appender' then
+    local ext_name = ngx.var.arg_ext_name
+    local res = fdfs:do_upload_appender(ext_name)
+    if not res then
+        ngx.say("ERR")
+    elseif res then
+        ngx.say(string.format("%s/%s",res.group_name, res.file_name))
+    else
+        ngx.exit(406)
+    end
 elseif method == 'download' then
     local fileid = ngx.var.arg_fileid
     local data = fdfs:do_download(fileid)
@@ -34,7 +44,16 @@ elseif method == 'download' then
     else
         ngx.print(data)
     end
-
+elseif method == 'append' then
+    local fileid = ngx.var.arg_fileid
+    local res = fdfs:do_append(fileid)
+    if not res then
+        ngx.say("ERR")
+    elseif res.status == 0 then
+        ngx.say("OK")
+    else
+        ngx.say("ERR:(" .. res.status .. ")")
+    end
 else
     ngx.say('not input method')
 end
