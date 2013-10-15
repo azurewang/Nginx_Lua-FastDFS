@@ -15,7 +15,7 @@ local VERSION = '0.1'
 local FDFS_PROTO_PKG_LEN_SIZE = 8
 local TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITHOUT_GROUP_ONE = 101
 local TRACKER_PROTO_CMD_SERVICE_QUERY_STORE_WITH_GROUP_ONE = 104
-local TRACKER_PROTO_CMD_SERVICE_QUERY_UPDATE = 103
+local TRACKER_PROTO_CMD_SERVICE_QUERY_UPDATE = 103query_update
 local TRACKER_PROTO_CMD_SERVICE_QUERY_FETCH_ONE = 102
 local STORAGE_PROTO_CMD_UPLOAD_FILE = 11
 local STORAGE_PROTO_CMD_DELETE_FILE = 12
@@ -406,7 +406,9 @@ function query_update_storage(self, fileid)
         local group_name = fileid:sub(1, pos-1)
         local file_name  = fileid:sub(pos + 1)
         local res = self:query_update_storage_ex(group_name, file_name)
-        res.file_name = file_name
+        if res then
+            res.file_name = file_name
+        end
         return res
     end
 end
